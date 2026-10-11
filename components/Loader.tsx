@@ -50,7 +50,7 @@ export function Loader({ locale }: { locale: 'en' | 'ar' }) {
       document.body.classList.remove('intro-lock')
       document.documentElement.dataset.intro = 'done'
       advance('gone')
-      document.getElementById('main')?.focus()
+      document.getElementById('main')?.focus({ preventScroll: true })
     }
 
     const liftCurtain = () => {
