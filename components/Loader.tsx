@@ -2,19 +2,24 @@
 
 import { useEffect, useRef, useState } from 'react'
 
-const MINIMUM_MS = 1600
-const CAP_MS = 3000
+const BRAND_IN_MS = 700
+const BRAND_HOLD_MS = 1200
+const CURTAIN_MS = 900
+const CAP_MS = 3400
+const SKIP_MIN_MS = 600
+
+type Phase = 'brand' | 'curtain' | 'gone'
 
 export function Loader({ locale }: { locale: 'en' | 'ar' }) {
-  const [visible, setVisible] = useState(true)
+  const [phase, setPhase] = useState<Phase>('brand')
+  const phaseRef = useRef<Phase>('brand')
   const skipRef = useRef<HTMLButtonElement>(null)
-  const startedAt = useRef<number | null>(null)
+  const startedAt = useRef(0)
   const ar = locale === 'ar'
 
   useEffect(() => {
-    const introDone = document.documentElement.dataset.intro === 'done'
-    if (introDone) {
-      setVisible(false)
+    if (document.documentElement.dataset.intro === 'done') {
+      setPhase('gone')
       return
     }
 
@@ -23,63 +28,115 @@ export function Loader({ locale }: { locale: 'en' | 'ar' }) {
     skipRef.current?.focus()
 
     let finished = false
-    let finishTimer: number | undefined
+    let cancelled = false
+    let ready = false
+    let holdElapsed = false
+    let holdTimer: number | undefined
+    let curtainTimer: number | undefined
     let capTimer: number | undefined
+
+    const advance = (next: Phase) => {
+      phaseRef.current = next
+      setPhase(next)
+    }
+
     const finish = () => {
       if (finished) return
       finished = true
-      window.clearTimeout(finishTimer)
+      window.clearTimeout(holdTimer)
+      window.clearTimeout(curtainTimer)
       window.clearTimeout(capTimer)
       sessionStorage.setItem('sc_intro_done', '1')
       document.body.classList.remove('intro-lock')
       document.documentElement.dataset.intro = 'done'
-      setVisible(false)
+      advance('gone')
       document.getElementById('main')?.focus()
     }
-    const skip = () => {
-      const elapsed = performance.now() - (startedAt.current ?? 0)
-      if (elapsed >= 800) finish()
+
+    const liftCurtain = () => {
+      if (finished || phaseRef.current !== 'brand') return
+      document.documentElement.dataset.intro = 'reveal'
+      advance('curtain')
+      curtainTimer = window.setTimeout(finish, CURTAIN_MS)
     }
+
+    const maybeLift = () => {
+      if (ready && holdElapsed) liftCurtain()
+    }
+
+    const skip = () => {
+      if (performance.now() - startedAt.current < SKIP_MIN_MS) return
+      if (phaseRef.current === 'brand') liftCurtain()
+      else if (phaseRef.current === 'curtain') finish()
+    }
+
     const onKey = (event: KeyboardEvent) => {
       if (event.key === 'Escape' || event.key === 'Enter') skip()
     }
-    const onTap = () => skip()
     document.addEventListener('keydown', onKey)
-    document.addEventListener('pointerdown', onTap)
+    document.addEventListener('pointerdown', skip)
 
-    const ready = async () => {
+    const waitForAssets = async () => {
       try {
         await document.fonts.ready
         const image = document.querySelector<HTMLImageElement>('[data-hero-image]')
         if (image?.decode) await image.decode().catch(() => undefined)
       } catch {
-        // The cap still guarantees the intro cannot block the page.
+        // The cap below still guarantees the intro cannot block the page.
       }
-      const remaining = Math.max(0, MINIMUM_MS - (performance.now() - (startedAt.current ?? 0)))
-      finishTimer = window.setTimeout(finish, remaining + 800)
+      if (cancelled) return
+      ready = true
+      maybeLift()
     }
-    void ready()
-    capTimer = window.setTimeout(finish, CAP_MS)
+    void waitForAssets()
+
+    holdTimer = window.setTimeout(() => {
+      holdElapsed = true
+      maybeLift()
+    }, BRAND_IN_MS + BRAND_HOLD_MS)
+
+    capTimer = window.setTimeout(() => {
+      if (phaseRef.current === 'brand') liftCurtain()
+      else finish()
+    }, CAP_MS)
 
     return () => {
+      cancelled = true
       document.removeEventListener('keydown', onKey)
-      document.removeEventListener('pointerdown', onTap)
-      window.clearTimeout(finishTimer)
+      document.removeEventListener('pointerdown', skip)
+      window.clearTimeout(holdTimer)
+      window.clearTimeout(curtainTimer)
       window.clearTimeout(capTimer)
       document.body.classList.remove('intro-lock')
     }
   }, [])
 
-  if (!visible) return null
+  if (phase === 'gone') return null
 
   return (
-    <div id="intro" className="intro" role="status" aria-live="polite" aria-label={ar ? 'جاري تحميل سيمبل كافيه' : 'Loading Simple Cafe'}>
-      <svg className="intro-svg" viewBox="0 0 720 180" aria-hidden="true">
-        <path className="intro-scribble" d="M104 91 C80 28 177 25 169 88 S265 153 260 75 S357 22 353 92 S455 148 448 78 S542 30 535 91 S624 141 617 72" />
-        <image href="/images/brand/wordmark-trace.svg" x="100" y="35" width="520" height="110" preserveAspectRatio="xMidYMid meet" className="intro-wordmark" />
-      </svg>
+    <div
+      id="intro"
+      className={phase === 'curtain' ? 'intro intro--curtain' : 'intro'}
+      role="status"
+      aria-live="polite"
+      aria-label={ar ? 'جاري تحميل سيمبل كافيه' : 'Loading Simple Cafe'}
+    >
+      <img
+        src="/images/brand/wordmark-trace.svg"
+        alt=""
+        width={520}
+        height={193}
+        className="intro-wordmark"
+      />
       <span className="intro-cafe">c a f e</span>
-      <button ref={skipRef} className="intro-skip focus-ring" type="button" onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))}>{ar ? 'تخطّى' : 'Skip'}</button>
+      <button
+        ref={skipRef}
+        className="intro-skip focus-ring"
+        type="button"
+        onClick={() => document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' }))}
+      >
+        {ar ? 'تخطّى' : 'Skip'}
+      </button>
     </div>
   )
 }
